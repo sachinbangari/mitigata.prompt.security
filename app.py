@@ -65,9 +65,14 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
 BASE_DIR = Path(__file__).parent
+# Serve UI/assets from a "static" subfolder if it exists, otherwise from the
+# app's own folder. This makes deployment work whether index.html and logo.png
+# are inside static/ (local) or sitting next to app.py (e.g. uploaded loose).
+STATIC_DIR = BASE_DIR / "static" if (BASE_DIR / "static").is_dir() else BASE_DIR
 
 app = FastAPI(title="S1 Prompt Security AI Gateway")
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+if (BASE_DIR / "static").is_dir():
+    app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +240,12 @@ async def call_llm(client: httpx.AsyncClient, message: str) -> str:
 # --------------------------------------------------------------------------- #
 @app.get("/")
 async def index():
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/logo.png")
+async def logo():
+    return FileResponse(STATIC_DIR / "logo.png")
 
 
 @app.get("/api/config")

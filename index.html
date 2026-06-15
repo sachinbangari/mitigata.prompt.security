@@ -55,7 +55,7 @@
     background: linear-gradient(90deg, transparent, rgba(47,203,92,.5), transparent);
   }
   .mark {
-    width: 80px; height: 80px; flex: none;
+    width: 50px; height: 50px; flex: none;
     border-radius: 13px;
     background: var(--surface-2);
     border: 1px solid rgba(47,203,92,.28);
@@ -172,7 +172,26 @@
 
   /* ---------- composer ---------- */
   footer { border-top: 1px solid var(--border-soft); background: linear-gradient(0deg, rgba(16,22,19,.85), rgba(7,9,8,.6)); backdrop-filter: blur(8px); padding: 16px 24px 20px; }
-  .composer { width: 100%; max-width: 880px; margin: 0 auto; display: flex; gap: 12px; align-items: flex-end; }
+  .attachment {
+    width: 100%; max-width: 880px; margin: 0 auto 10px; display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border-soft);
+    border-radius: 10px; padding: 7px 12px;
+  }
+  .attachment svg { color: var(--green); flex: none; }
+  #attachment-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .att-note { color: var(--modify); font-size: 11px; }
+  #attachment-remove { margin-left: auto; flex: none; background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
+  #attachment-remove:hover { color: var(--block); }
+  .composer { width: 100%; max-width: 880px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+  .attach {
+    flex: none; width: 50px; height: 50px; border-radius: 14px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border-soft); color: var(--muted);
+    display: grid; place-items: center; transition: border-color .15s, color .15s;
+  }
+  .attach:hover { border-color: var(--green); color: var(--green); }
+  .attach.has-file { border-color: var(--green); color: var(--green); }
+  .attach:focus-visible { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(47,203,92,.2); }
   textarea {
     flex: 1; resize: none; font: inherit; font-size: 15px; line-height: 1.5;
     color: var(--text); background: var(--surface); border: 1px solid var(--border-soft);
@@ -214,7 +233,7 @@
     </div>
     <div class="brand">
       <div class="title">Miti<span class="accent">gata</span> AI</div>
-      <div class="subtitle">Sachin's AI Agent &middot; Inspected by SentinelOne's Prompt Security</div>
+      <div class="subtitle">Sachin's AI Agent &middot; Inspected by SentinelOne</div>
     </div>
     <div class="spacer"></div>
     <div class="status" id="status" title="Security &amp; model status">
@@ -258,11 +277,22 @@
   </main>
 
   <footer>
+    <div id="attachment" class="attachment" hidden>
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      <span id="attachment-name"></span>
+      <span id="attachment-note" class="att-note"></span>
+      <button id="attachment-remove" title="Remove" aria-label="Remove attachment">&times;</button>
+    </div>
     <div class="composer">
+      <button class="attach" id="attach" title="Attach a document" aria-label="Attach a document">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <input type="file" id="file" hidden accept=".txt,.md,.csv,.tsv,.json,.log,.yaml,.yml,.xml,.html,.py,.js,.ts,.pdf,.docx,.png,.jpg,.jpeg,.gif,.webp" />
       <textarea id="input" rows="1" placeholder="Type a prompt&hellip;  (Enter to send, Shift+Enter for newline)"></textarea>
       <button class="send" id="send">Send</button>
     </div>
   </footer>
+
 
 <script>
 const convo  = document.getElementById('conversation');
@@ -354,13 +384,32 @@ function addTurn(userText, data) {
 
 async function submit() {
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !attachment) return;
+
+  const att = attachment;                // capture before clearing
   input.value = ''; autoGrow();
+  clearAttachment();
   send.disabled = true;
   empty.style.display = 'none';
 
+  // What the user sees in their bubble:
+  let displayText = text;
+  if (att) displayText = (text ? text + '\n' : '') + '(attached: ' + att.filename + ')';
+
+  // What actually gets sent and scanned — the file's text rides along with the prompt:
+  let sentMessage = text;
+  if (att) {
+    if (att.text) {
+      sentMessage = (text ? text + '\n\n' : '') +
+                    '[Attached file: ' + att.filename + ']\n' + att.text;
+    } else {
+      sentMessage = (text ? text + '\n\n' : '') +
+                    '[Attached file: ' + att.filename + ' \u2014 ' + (att.note || 'no readable text') + ']';
+    }
+  }
+
   const turn = el('div', 'turn');
-  turn.appendChild(Object.assign(el('div', 'bubble user'), { textContent: text }));
+  turn.appendChild(Object.assign(el('div', 'bubble user'), { textContent: displayText }));
   const pending = el('div', 'bubble assistant', 'Scanning & generating…');
   pending.style.opacity = '.6';
   turn.appendChild(pending);
@@ -371,15 +420,15 @@ async function submit() {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, conversation_id: conversationId })
+      body: JSON.stringify({ message: sentMessage, conversation_id: conversationId })
     });
     const data = await res.json();
     if (data.conversation_id) conversationId = data.conversation_id;
     turn.remove();
-    addTurn(text, data);
+    addTurn(displayText, data);
   } catch (e) {
     turn.remove();
-    addTurn(text, { error: 'Could not reach the gateway: ' + e.message });
+    addTurn(displayText, { error: 'Could not reach the gateway: ' + e.message });
   } finally {
     send.disabled = false;
     input.focus();
@@ -398,6 +447,48 @@ input.addEventListener('keydown', e => {
 send.addEventListener('click', submit);
 document.querySelectorAll('.examples button').forEach(b =>
   b.addEventListener('click', () => { input.value = b.dataset.fill; autoGrow(); input.focus(); }));
+
+// ---- file attachment ----
+const attachBtn = document.getElementById('attach');
+const fileInput = document.getElementById('file');
+const attBox    = document.getElementById('attachment');
+const attName   = document.getElementById('attachment-name');
+const attNote   = document.getElementById('attachment-note');
+const attRemove = document.getElementById('attachment-remove');
+let attachment = null;
+
+function clearAttachment() {
+  attachment = null;
+  fileInput.value = '';
+  attBox.hidden = true;
+  attName.textContent = '';
+  attNote.textContent = '';
+  attachBtn.classList.remove('has-file');
+}
+
+attachBtn.addEventListener('click', () => fileInput.click());
+attRemove.addEventListener('click', clearAttachment);
+
+fileInput.addEventListener('change', async () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+  attBox.hidden = false;
+  attName.textContent = f.name;
+  attNote.textContent = 'reading…';
+  attachBtn.classList.add('has-file');
+  try {
+    const fd = new FormData();
+    fd.append('file', f);
+    const res = await fetch('/api/extract', { method: 'POST', body: fd });
+    const data = await res.json();
+    attachment = { filename: data.filename || f.name, text: data.text || '', note: data.note || '', kind: data.kind };
+    attName.textContent = attachment.filename;
+    attNote.textContent = attachment.note || (attachment.text ? 'ready' : '');
+  } catch (e) {
+    attachment = { filename: f.name, text: '', note: 'could not read file' };
+    attNote.textContent = 'could not read file';
+  }
+});
 </script>
 </body>
 </html>

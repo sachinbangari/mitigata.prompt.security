@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -329,6 +329,70 @@ async def config():
         "llm_model": ANTHROPIC_MODEL if LLM_PROVIDER == "anthropic" else OPENAI_MODEL,
         "llm_key_set": bool(ANTHROPIC_API_KEY) if LLM_PROVIDER == "anthropic" else bool(OPENAI_API_KEY),
     }
+
+
+MAX_UPLOAD_BYTES   = 5 * 1024 * 1024      # 5 MB
+MAX_EXTRACT_CHARS  = 20000                # cap how much text we feed the model
+_TEXT_EXTS  = (".txt", ".md", ".csv", ".tsv", ".json", ".log", ".yaml", ".yml",
+               ".xml", ".html", ".py", ".js", ".ts", ".java", ".c", ".cpp", ".ini", ".env")
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg")
+
+
+def _extract_text(filename: str, content: bytes) -> tuple[str, str]:
+    """Return (kind, text) extracted from an uploaded file."""
+    name = (filename or "").lower()
+    if name.endswith(_TEXT_EXTS):
+        return "text", content.decode("utf-8", errors="ignore")
+    if name.endswith(".pdf"):
+        try:
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(content))
+            return "pdf", "\n".join((p.extract_text() or "") for p in reader.pages)
+        except Exception as exc:
+            return "error", f"(could not read PDF: {exc})"
+    if name.endswith(".docx"):
+        try:
+            import io
+            from docx import Document
+            doc = Document(io.BytesIO(content))
+            return "docx", "\n".join(p.text for p in doc.paragraphs)
+        except Exception as exc:
+            return "error", f"(could not read Word document: {exc})"
+    if name.endswith(_IMAGE_EXTS):
+        return "image", ""
+    # last resort: try to read as text
+    try:
+        return "text", content.decode("utf-8")
+    except Exception:
+        return "unsupported", ""
+
+
+@app.post("/api/extract")
+async def extract(file: UploadFile = File(...)):
+    """Read an uploaded file and return its text so the UI can attach it to a prompt."""
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        return {"filename": file.filename, "kind": "error", "text": "",
+                "note": "File is larger than 5 MB and was not read."}
+
+    kind, text = _extract_text(file.filename, content)
+    truncated = len(text) > MAX_EXTRACT_CHARS
+    if truncated:
+        text = text[:MAX_EXTRACT_CHARS]
+
+    note = ""
+    if kind == "image":
+        note = "This is an image — the current text model can't read images, so its contents won't be analysed."
+    elif kind == "unsupported":
+        note = "This file type couldn't be read as text."
+    elif kind == "error":
+        note = text
+        text = ""
+    elif truncated:
+        note = f"File was long; only the first {MAX_EXTRACT_CHARS:,} characters were used."
+
+    return {"filename": file.filename, "kind": kind, "text": text, "note": note}
 
 
 @app.post("/api/chat")

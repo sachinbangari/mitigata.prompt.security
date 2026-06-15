@@ -138,52 +138,96 @@ def _flatten_findings(value: Any) -> list[dict]:
     return out
 
 
+# --- verdict vocabulary: how S1 may express allow / modify / block, anywhere ---
+_BLOCK_ACTION_WORDS  = {"block", "blocked", "deny", "denied", "reject", "rejected",
+                        "prevent", "prevented", "prohibit", "prohibited", "forbidden"}
+_MODIFY_ACTION_WORDS = {"modify", "modified", "redact", "redacted", "anonymize",
+                        "anonymized", "mask", "masked", "sanitize", "sanitized"}
+_ALLOW_ACTION_WORDS  = {"allow", "allowed", "pass", "passed", "log", "logged",
+                        "monitor", "audit", "report", "ok", "clean", "approve", "approved"}
+_ACTION_KEYS     = {"action", "verdict", "decision", "status", "outcome",
+                    "enforcement", "policy_action", "result_action", "mode"}
+_BLOCK_FLAG_KEYS = {"blocked", "is_blocked", "should_block", "block",
+                    "violated", "is_violation", "denied"}
+_PASS_FLAG_KEYS  = {"passed", "allowed", "valid", "is_valid", "ok", "clean"}
+_MODIFIED_KEYS   = {"modified_text", "modified", "sanitized_text", "redacted_text"}
+
+
+def _scan_signals(data: Any) -> dict:
+    """Walk the ENTIRE S1 response and collect every verdict signal, wherever it
+    sits (top level, result.prompt, inside a violations[] item, etc.). This is
+    what lets the gateway enforce a block even when S1 nests the decision."""
+    sig = {"block_action": False, "modify": False, "block_flag": False,
+           "allow_action": False, "modified_text": None}
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                kl = str(k).lower()
+                if isinstance(v, str):
+                    vl = v.strip().lower()
+                    if kl in _ACTION_KEYS:
+                        if vl in _BLOCK_ACTION_WORDS:    sig["block_action"] = True
+                        elif vl in _MODIFY_ACTION_WORDS: sig["modify"] = True
+                        elif vl in _ALLOW_ACTION_WORDS:  sig["allow_action"] = True
+                    if kl in _MODIFIED_KEYS and v.strip():
+                        sig["modify"] = True
+                        if not sig["modified_text"]:
+                            sig["modified_text"] = v
+                elif isinstance(v, bool):
+                    if kl in _BLOCK_FLAG_KEYS and v:
+                        sig["block_flag"] = True
+                    if kl in _PASS_FLAG_KEYS and v is False:
+                        sig["block_flag"] = True
+                walk(v)
+        elif isinstance(o, list):
+            for item in o:
+                walk(item)
+
+    walk(data)
+    return sig
+
+
 def _normalize_protect(direction: str, data: Any) -> dict:
     """Normalize the S1 /api/protect response into a consistent verdict.
 
-    S1's exact JSON can vary slightly by version/tenant. This parser looks in
-    the common places. If your console's API example uses different field names,
-    adjust the keys below -- the raw response is always returned under "raw" so
-    you can see exactly what came back and tweak this.
+    The decision is made by scanning the WHOLE response for signals, so a block
+    is honoured no matter where S1 puts it. Priority order (so a redaction is not
+    mistaken for a hard block):
+        1. an explicit block ACTION  -> block
+        2. a modify/redact signal    -> modify (allowed, with redacted text)
+        3. any block FLAG (passed:false, blocked:true, ...) -> block
+        4. otherwise                 -> allow
+    The full response is kept under "raw" so you can always see what S1 sent.
     """
     verdict = {"enabled": True, "allowed": True, "action": "allow",
                "modified_text": None, "findings": [], "raw": data}
     if not isinstance(data, dict):
         return verdict
 
-    # The relevant block is usually under result.prompt or result.response.
+    # Findings (for display) — pull from the usual containers wherever they are.
+    findings: list[dict] = []
     node = data
     res = data.get("result")
     if isinstance(res, dict):
         node = res.get(direction) if isinstance(res.get(direction), dict) else res
+    for src in ([node] if node is data else [node, data]):
+        if isinstance(src, dict):
+            for key in ("findings", "violations", "detections", "categories"):
+                v = src.get(key)
+                if v:
+                    findings.extend(_flatten_findings(v))
+    verdict["findings"] = findings
 
-    action = str(node.get("action") or data.get("action") or data.get("status") or "").lower()
-    passed = node.get("passed")
-    if passed is None:
-        passed = data.get("passed")
-
-    findings: list[dict] = []
-    for key in ("findings", "violations", "detections", "categories"):
-        v = node.get(key) or data.get(key)
-        if v:
-            findings.extend(_flatten_findings(v))
-
-    modified = (node.get("modified_text") or node.get("modified")
-                or data.get("modified_text"))
-
-    block_words  = ("block", "blocked", "deny", "denied", "reject", "rejected")
-    modify_words = ("modify", "modified", "redact", "redacted", "anonymize", "mask", "masked")
-
-    if action in block_words:
+    sig = _scan_signals(data)
+    if sig["block_action"]:
         verdict.update(allowed=False, action="block")
-    elif action in modify_words or modified:
-        verdict.update(allowed=True, action="modify", modified_text=modified)
-    elif passed is False:
+    elif sig["modify"]:
+        verdict.update(allowed=True, action="modify", modified_text=sig["modified_text"])
+    elif sig["block_flag"]:
         verdict.update(allowed=False, action="block")
     else:
         verdict.update(allowed=True, action="allow")
-
-    verdict["findings"] = findings
     return verdict
 
 
@@ -217,7 +261,10 @@ async def protect(client: httpx.AsyncClient, *, prompt: Optional[str] = None,
     try:
         r = await client.post(PS_PROTECT_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
-        return _normalize_protect(direction, r.json())
+        v = _normalize_protect(direction, r.json())
+        log.info("protect[%s] -> action=%s findings=%s",
+                 direction, v["action"], [f["label"] for f in v["findings"]])
+        return v
     except Exception as exc:  # network error, auth error, timeout, bad JSON...
         log.error("S1 protect call failed (%s): %s", direction, exc)
         if PS_FAIL_OPEN:
